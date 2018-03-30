@@ -24,6 +24,10 @@ curl -LO https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64
 mv jq-linux64 /usr/bin/jq
 chmod +x /usr/bin/jq
 
+# TARGET variable gives ability to switch context for building rhel based images, default is "centos"
+# If CI slave is configured with TARGET="rhel" RHEL based images should be generated then.
+TARGET=${TARGET:-"centos"}
+
 # Keycloak token provided by `che_functional_tests_credentials_wrapper` from `openshiftio-cico-jobs` is a refresh token. 
 # Obtaining osio user token
 AUTH_RESPONSE=$(curl -H "Content-Type: application/json" -X POST -d '{"refresh_token":"'$KEYCLOAK_TOKEN'"}' https://auth.prod-preview.openshift.io/api/token/refresh)
@@ -37,9 +41,19 @@ scl enable rh-maven33 'mvn clean verify -B'
 
 if [ $? -eq 0 ]; then
 
+  if [ $TARGET == "rhel" ]; then
+    export DOCKER_REGISTRY=${DOCKER_REGISTRY:-"prod.registry.devshift.net"}
+    export DOCKERFILE="Dockerfile.rhel"
+    export DOCKER_IMAGE="${DOCKER_REGISTRY}/rhche/che-starter"
+  else
+    export DOCKERFILE="Dockerfile"
+    export DOCKER_IMAGE="rhche/che-starter"
+    export REGISTRY="push.registry.devshift.net"
+  fi
+
   export PROJECT_VERSION=`mvn -o help:evaluate -Dexpression=project.version | grep -e '^[[:digit:]]'`
 
-  docker build -t rhche/che-starter:latest .
+  docker build -t ${DOCKER_IMAGE}:latest -f ${DOCKERFILE} .
 
   if [ $? -ne 0 ]; then
     echo 'Docker Build Failed!'
@@ -48,26 +62,26 @@ if [ $? -eq 0 ]; then
 
   TAG=$(echo $GIT_COMMIT | cut -c1-${DEVSHIFT_TAG_LEN})
 
-  docker login -u rhchebot -p $RHCHEBOT_DOCKER_HUB_PASSWORD -e noreply@redhat.com
-
-  docker tag rhche/che-starter:latest rhche/che-starter:$TAG
-  docker push rhche/che-starter:latest
-  docker push rhche/che-starter:$TAG
-
-  REGISTRY="push.registry.devshift.net"
-
-  if [ -n "${DEVSHIFT_USERNAME}" -a -n "${DEVSHIFT_PASSWORD}" ]; then
-    docker login -u ${DEVSHIFT_USERNAME} -p ${DEVSHIFT_PASSWORD} ${REGISTRY}
-  else
-      echo "Could not login, missing credentials for the registry"
+  if [ $TARGET != "rhel" ]; then
+    docker login -u rhchebot -p $RHCHEBOT_DOCKER_HUB_PASSWORD -e noreply@redhat.com
   fi
 
-  docker tag rhche/che-starter:latest ${REGISTRY}/almighty/che-starter:$TAG
-  docker push ${REGISTRY}/almighty/che-starter:$TAG
+  docker tag ${DOCKER_IMAGE}:latest ${DOCKER_IMAGE}:$TAG
+  docker push ${DOCKER_IMAGE}:latest
+  docker push ${DOCKER_IMAGE}:$TAG
 
-  docker tag rhche/che-starter:latest ${REGISTRY}/almighty/che-starter:latest
-  docker push ${REGISTRY}/almighty/che-starter:latest
+  if [ $TARGET != "rhel" ]; then
+    if [ -n "${DEVSHIFT_USERNAME}" -a -n "${DEVSHIFT_PASSWORD}" ]; then
+      docker login -u ${DEVSHIFT_USERNAME} -p ${DEVSHIFT_PASSWORD} ${REGISTRY}
+    else
+      echo "Could not login, missing credentials for the registry"
+    fi
+    docker tag ${DOCKER_IMAGE}:latest ${REGISTRY}/almighty/che-starter:$TAG
+    docker push ${REGISTRY}/almighty/che-starter:$TAG
 
+    docker tag ${DOCKER_IMAGE}:latest ${REGISTRY}/almighty/che-starter:latest
+    docker push ${REGISTRY}/almighty/che-starter:latest
+  fi
 else
   echo 'Build Failed!'
   exit 1
